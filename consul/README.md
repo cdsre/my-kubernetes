@@ -70,8 +70,67 @@ helm install --values helm/values-v2.yaml consul hashicorp/consul --create-names
 ```
 ## Usage
 Now everything is installed we should be able to look up the nodePort that the consul UI is running on and using the 
-nodes IP with the node port we should be able to access the consul UI.
+nodes IP with the node port we should be able to access the consul UI. In my case I have setup nginx as a reverse proxy
+to forward the traffic to the consul UI. I have also setup a DNS record to point to the nginx server so I can access the
+consul UI using a domain name.
 
 ```bash
 kubectl get service -n consul consul-ui -o=jsonpath='{.spec.ports[?(@.name=="https")].nodePort}{"\n"}';
 ```
+
+We can also get the root token to access the consul UI. This will be stored in a k8 secret. We can also use this token
+to access the consul CLI
+
+```bash
+kubectl get secret -n consul consul-bootstrap-acl-token -o jsonpath="{.data.token}" | base64 --decode
+```
+
+## Deploy sample app
+
+The demo repo includes a sample app called hashicups. In V1 we deploy it and use nginx to act as the gateway to the front 
+end. If we apply this and expose the nginx service via a proxy
+
+```bash
+kubectl apply -f hashicups/v1/
+kubectl port-forward svc/nginx --namespace default 8080:80
+```
+
+when we try to connect we will get an error `RBAC: access denied`. This is because we have not setup the intentions yet 
+in consul that state which services whithin the mesh are allowed to communicate with each other. We can do this by running
+the following command
+
+```bash
+kubectl apply -f hashicups/intentions/allow.yaml
+```
+
+Now we should be able to access the hashicups app via the nginx proxy. This is ok but nginx its self is running as a 
+service within the mesh, and we had to expose it via a port-forward to get access to it. In V2 we will change this so that
+we now use the consul api-gateway to provide external access the hashicups app via nginx.
+
+The API gateway provides a means to allow ingress to the services within the mesh. We will first deploy the gateway and 
+then setup the routes and intentions to allow access to the hashicups app.
+
+```bash
+kubectl apply -f api-gw/consul-api-gateway.yaml --namespace consul && \
+kubectl wait --for=condition=accepted gateway/api-gateway --namespace consul --timeout=90s && \
+kubectl apply -f api-gw/routes.yaml --namespace consul && \
+kubectl apply -f api-gw/intentions.yaml --namespace consul
+```
+
+In order for us to be able to route from the gateway to the services we need to create a reference grant that allows the
+gateway to access the services in the default namespace for the purposes of routing
+
+```bash
+kubectl apply -f hashicups/v2/
+```
+
+we can then find its node port and access the hashicups app via the gateway
+
+```bash
+kubectl get service -n consul api-gateway -o=jsonpath='{.spec.ports[?(@.name=="https")].nodePort}{"\n"}'
+```
+
+## Observability
+We can also setup observability for the consul cluster. We can use the prometheus and grafana helm charts to setup and
+then based on the helm values in our helm v2 file we can configure the consul cluster to send metrics to the prometheus
+endpoint and enrich the services view in consul.
