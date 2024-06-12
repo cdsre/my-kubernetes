@@ -1,2 +1,2 @@
 # my-kubernetes
-A collection of kubernetes manifests and read me files
+A collection of kubernetes manifests and readme files
